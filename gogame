@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>龜吉衝浪跑酷</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; touch-action:none; }
+  #wrap { position:relative; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
+  #stage { position:relative; aspect-ratio:16/9; width:min(100vw, 100vh*16/9); }
+  canvas { width:100%; height:100%; display:block; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+             background:rgba(0,40,80,.55); color:#fff; font-family:"Microsoft JhengHei","PingFang TC",sans-serif; text-align:center; }
+  .overlay h1 { font-size:5vmin; margin:0 0 1.5vmin; }
+  .overlay p  { font-size:2.6vmin; margin:.6vmin 0; }
+  .overlay button { margin-top:3vmin; font-size:3vmin; padding:1.2vmin 5vmin; border:none; border-radius:999px;
+                    background:#ff4b4b; color:#fff; cursor:pointer; font-weight:bold; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="c" width="1920" height="1080"></canvas>
+
+    <div id="startScreen" class="overlay">
+      <h1>🐢 龜吉衝浪跑酷</h1>
+      <p>避開海上的垃圾！每碰到一個扣 2 分</p>
+      <p>按 ↑ ↓ 方向鍵，或點擊畫面上的紅色箭頭切換跑道</p>
+      <p id="loadingText">素材載入中…</p>
+      <button id="startBtn" disabled>開始遊戲</button>
+    </div>
+
+    <div id="endScreen" class="overlay hidden">
+      <h1>時間到！</h1>
+      <p id="finalScore"></p>
+      <button id="restartBtn">再玩一次</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ================= 設定（可自行調整） ================= */
+const W = 1920, H = 1080;
+const GAME_TIME   = 30;     // 遊戲秒數
+const START_SCORE = 30;     // 起始分數
+const HIT_PENALTY = 2;      // 每次碰撞扣分
+const FALL_TIME   = 0.8;    // 倒下圖片顯示秒數
+const BASE_SPEED  = 520;    // 障礙物初始速度 (px/秒)
+const SPEED_UP    = 8;      // 每秒增加的速度
+
+// 三個跑道的中心 Y（對應版面示意圖的三塊藍色區域）
+const LANES = [411, 651, 927];
+const CHAR_X = 360;         // 角色水平位置
+const CHAR_Y_OFFSET = -45;  // 角色相對跑道中心的視覺偏移
+
+const URL = {
+  hero:  "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299291/%E9%BE%9C%E5%90%89%E8%A1%9D%E6%B5%AA.png",
+  fall:  "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299471/%E9%9A%9C%E7%A4%99%E6%91%94%E5%80%92.png",
+  video: "https://res.cloudinary.com/h0fz7frb/video/upload/v1794300196/%E8%B7%91%E9%85%B7%E9%81%8A%E6%88%B2%E8%83%8C%E6%99%AF.mp4",
+  up:    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794300245/%E9%81%8A%E6%88%B2%E8%A8%AD%E8%A8%88-12.png",
+  down:  "https://res.cloudinary.com/h0fz7frb/image/upload/v1794300261/%E9%81%8A%E6%88%B2%E8%A8%AD%E8%A8%88-13.png",
+  trash: [
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299600/%E5%9E%83%E5%9C%BE-12.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299600/%E5%9E%83%E5%9C%BE-11.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299599/%E5%9E%83%E5%9C%BE-10.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299599/%E5%9E%83%E5%9C%BE-09.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299598/%E5%9E%83%E5%9C%BE-08.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299598/%E5%9E%83%E5%9C%BE-07.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299597/%E5%9E%83%E5%9C%BE-06.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299597/%E5%9E%83%E5%9C%BE-03.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299597/%E5%9E%83%E5%9C%BE-05.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299597/%E5%9E%83%E5%9C%BE-04.png",
+    "https://res.cloudinary.com/h0fz7frb/image/upload/v1794299597/%E5%9E%83%E5%9C%BE-13.png"
+  ]
+};
+
+// 箭頭按鈕位置（對應版面示意圖：左下為上、右下為下）
+const ARROW_UP   = { x: 70,   y: 830, w: 90, h: 160 };
+const ARROW_DOWN = { x: 1740, y: 830, w: 90, h: 160 };
+
+/* ================= 素材載入 ================= */
+function loadImg(src) {
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => { console.warn("圖片載入失敗：", src); res(null); };
+    im.src = src;
+  });
+}
+
+const video = document.createElement("video");
+video.src = URL.video;
+video.loop = true;
+video.muted = true;
+video.playsInline = true;
+video.preload = "auto";
+
+let imgs = {};
+async function loadAll() {
+  const [hero, fall, up, down, ...trash] = await Promise.all([
+    loadImg(URL.hero), loadImg(URL.fall), loadImg(URL.up), loadImg(URL.down),
+    ...URL.trash.map(loadImg)
+  ]);
+  imgs = { hero, fall, up, down, trash: trash.filter(Boolean) };
+}
+
+/* ================= 畫布與狀態 ================= */
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+let state = "ready";            // ready | playing | over
+let score, timeLeft, lane, charY, fallTimer, obstacles, spawnTimer, elapsed, popups;
+
+function resetGame() {
+  score = START_SCORE;
+  timeLeft = GAME_TIME;
+  lane = 1;                      // 從中間跑道開始
+  charY = LANES[lane];
+  fallTimer = 0;
+  obstacles = [];
+  popups = [];
+  spawnTimer = 0.8;
+  elapsed = 0;
+}
+resetGame();
+
+/* ================= 控制 ================= */
+function moveLane(d) {
+  if (state !== "playing") return;
+  lane = Math.max(0, Math.min(LANES.length - 1, lane + d));
+}
+
+window.addEventListener("keydown", e => {
+  if (e.key === "ArrowUp"   || e.key === "w" || e.key === "W") { moveLane(-1); e.preventDefault(); }
+  if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") { moveLane(+1); e.preventDefault(); }
+});
+
+function inRect(p, r, pad = 40) {
+  return p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad;
+}
+canvas.addEventListener("pointerdown", e => {
+  const rect = canvas.getBoundingClientRect();
+  const p = { x: (e.clientX - rect.left) * W / rect.width, y: (e.clientY - rect.top) * H / rect.height };
+  if (inRect(p, ARROW_UP))   moveLane(-1);
+  if (inRect(p, ARROW_DOWN)) moveLane(+1);
+});
+
+/* ================= 遊戲邏輯 ================= */
+function spawnObstacle() {
+  if (!imgs.trash.length) return;
+  const img = imgs.trash[Math.floor(Math.random() * imgs.trash.length)];
+  const maxSize = 140;
+  const ratio = Math.min(maxSize / img.width, maxSize / img.height);
+  obstacles.push({
+    img,
+    w: img.width * ratio,
+    h: img.height * ratio,
+    x: W + 100,
+    lane: Math.floor(Math.random() * LANES.length),
+    hit: false,
+    phase: Math.random() * Math.PI * 2
+  });
+}
+
+function update(dt) {
+  if (state !== "playing") return;
+
+  elapsed += dt;
+  timeLeft -= dt;
+  if (timeLeft <= 0) { timeLeft = 0; endGame(); return; }
+
+  // 角色平滑移動到目標跑道
+  const targetY = LANES[lane];
+  charY += (targetY - charY) * Math.min(1, dt * 14);
+
+  if (fallTimer > 0) fallTimer -= dt;
+
+  // 產生障礙物（越玩越密）
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnObstacle();
+    spawnTimer = Math.max(0.45, 0.7 + Math.random() * 0.6 - elapsed * 0.01);
+  }
+
+  // 移動障礙物 + 碰撞
+  const speed = BASE_SPEED + elapsed * SPEED_UP;
+  for (const o of obstacles) {
+    o.x -= speed * dt;
+    if (!o.hit && o.lane === lane) {
+      const charHalf = 65;                 // 角色碰撞寬度的一半
+      const obsHalf = o.w * 0.4;           // 稍微縮小，判定較寬鬆
+      if (Math.abs(o.x - CHAR_X) < charHalf + obsHalf) {
+        o.hit = true;
+        score = Math.max(0, score - HIT_PENALTY);
+        fallTimer = FALL_TIME;             // 顯示倒下圖片，之後自動恢復
+        popups.push({ x: CHAR_X, y: charY - 170, t: 0 });
+      }
+    }
+  }
+  obstacles = obstacles.filter(o => o.x > -200);
+
+  popups.forEach(p => p.t += dt);
+  popups = popups.filter(p => p.t < 0.9);
+}
+
+/* ================= 繪圖 ================= */
+function drawFit(img, cx, cy, maxW, maxH) {
+  if (!img) return;
+  const r = Math.min(maxW / img.width, maxH / img.height);
+  const w = img.width * r, h = img.height * r;
+  ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+}
+
+function outlineText(text, x, y, size, align = "center") {
+  ctx.font = `bold ${size}px "Microsoft JhengHei","PingFang TC",sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = size * 0.16;
+  ctx.strokeStyle = "#0a3a66";
+  ctx.lineJoin = "round";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(text, x, y);
+}
+
+function draw() {
+  // 背景影片（循環播放）
+  if (video.readyState >= 2) ctx.drawImage(video, 0, 0, W, H);
+  else { ctx.fillStyle = "#57b6e4"; ctx.fillRect(0, 0, W, H); }
+
+  // 障礙物
+  for (const o of obstacles) {
+    const bob = Math.sin(performance.now() / 300 + o.phase) * 6;
+    ctx.globalAlpha = o.hit ? 0.45 : 1;
+    ctx.drawImage(o.img, o.x - o.w / 2, LANES[o.lane] + bob - o.h / 2, o.w, o.h);
+    ctx.globalAlpha = 1;
+  }
+
+  // 角色（碰到障礙物 → 倒下圖片 → 自動恢復）
+  const cy = charY + CHAR_Y_OFFSET + Math.sin(performance.now() / 250) * 4;
+  const img = fallTimer > 0 && imgs.fall ? imgs.fall : imgs.hero;
+  drawFit(img, CHAR_X, cy, 300, 300);
+
+  // 控制箭頭
+  if (imgs.up)   ctx.drawImage(imgs.up,   ARROW_UP.x,   ARROW_UP.y,   ARROW_UP.w,   ARROW_UP.h);
+  if (imgs.down) ctx.drawImage(imgs.down, ARROW_DOWN.x, ARROW_DOWN.y, ARROW_DOWN.w, ARROW_DOWN.h);
+
+  // 計時（正上方）與分數（右上方）
+  outlineText(String(Math.ceil(timeLeft)), W / 2, 70, 90);
+  outlineText("分數 " + score, W - 60, 70, 64, "right");
+
+  // 扣分提示
+  for (const p of popups) {
+    ctx.globalAlpha = 1 - p.t / 0.9;
+    outlineText("-" + HIT_PENALTY, p.x, p.y - p.t * 60, 70);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ================= 主迴圈 ================= */
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* ================= 流程控制 ================= */
+const startScreen = document.getElementById("startScreen");
+const endScreen   = document.getElementById("endScreen");
+const startBtn    = document.getElementById("startBtn");
+const restartBtn  = document.getElementById("restartBtn");
+
+function startGame() {
+  resetGame();
+  state = "playing";
+  startScreen.classList.add("hidden");
+  endScreen.classList.add("hidden");
+  video.play().catch(() => {});
+}
+function endGame() {
+  state = "over";
+  document.getElementById("finalScore").textContent = "最終分數：" + score + " / " + START_SCORE;
+  endScreen.classList.remove("hidden");
+}
+
+startBtn.addEventListener("click", startGame);
+restartBtn.addEventListener("click", startGame);
+
+loadAll().then(() => {
+  document.getElementById("loadingText").textContent = "準備完成！";
+  startBtn.disabled = false;
+  video.play().catch(() => {});   // 部分瀏覽器需互動後才會播放，開始鈕會再次呼叫
+});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
